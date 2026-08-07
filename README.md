@@ -200,10 +200,15 @@ the embedding pipeline and for importing `app.database`:
 required by `app.config`. These notebook-only installs are intentionally not
 added to the FastAPI application's dependency lock.
 
-Complete the `pg_host` and `endpoint_name` widgets before running the database
-cells. The notebook also provides widgets for `pg_database`, `pg_user`,
-`pg_port`, and `pg_sslmode`; `pg_user` defaults to the current Databricks user
-when available. These values populate the existing `APP_ENV=databricks` and
+Run the widget-creation cell by itself first. After it completes, enter
+`pg_host` and `endpoint_name` in the notebook widget panel, then run the
+following validation cell. The notebook also provides widgets for
+`pg_database`, `pg_user`, `pg_port`, and `pg_sslmode`; `pg_user` defaults to the
+current Databricks user when available. If the widget panel is collapsed, open
+or pin it from the notebook's widget-panel controls. Creating or editing
+widgets requires edit permission on the notebook.
+
+These values populate the existing `APP_ENV=databricks` and
 `PG*`/`ENDPOINT_NAME` environment contract before importing
 `app.database.get_connection()`. The notebook does not decode a second secret
 or create its own `psycopg2.connect` configuration.

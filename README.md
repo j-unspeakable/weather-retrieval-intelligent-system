@@ -22,7 +22,8 @@ from the Day 2 reference application.
   psycopg2 DDL, upsert, and read logic.
 - `app/routers/weather.py` exposes both JSON and HTML workflows.
 - `notebooks/ingest_weather_embeddings.ipynb` creates chunk embeddings from
-  the existing `weather_documents` rows without changing the FastAPI runtime.
+  the existing `weather_documents` rows using a notebook-local Lakebase OAuth
+  connection without changing the FastAPI runtime.
 
 ## Configuration
 
@@ -188,17 +189,17 @@ from `weather_documents`. It does not call weather APIs or use Spark.
 
 ### Notebook configuration
 
-Run the notebook from this repository in a Databricks Git folder. Its first
+Run the notebook on Databricks compute. It is independent from workspace-file
+imports and does not use private notebook context or JVM bridge APIs. Its first
 cells install only the independent notebook-compute dependencies needed for
-the embedding pipeline and for importing `app.database`:
+the embedding pipeline and Lakebase OAuth connection:
 
 ```python
-%pip install -q sentence-transformers 'psycopg2-binary>=2.9.9' 'databricks-sdk>=0.118.0' 'pydantic-settings>=2.0.0'
+%pip install -q sentence-transformers 'psycopg2-binary>=2.9.9' 'databricks-sdk>=0.118.0'
 ```
 
-`databricks-sdk` is required by `app.database`, and `pydantic-settings` is
-required by `app.config`. These notebook-only installs are intentionally not
-added to the FastAPI application's dependency lock.
+These notebook-only installs are intentionally not added to the FastAPI
+application's dependency lock.
 
 Run the widget-creation cell by itself first. After it completes, enter
 `pg_host` and `endpoint_name` in the notebook widget panel, then run the
@@ -208,10 +209,12 @@ current Databricks user when available. If the widget panel is collapsed, open
 or pin it from the notebook's widget-panel controls. Creating or editing
 widgets requires edit permission on the notebook.
 
-These values populate the existing `APP_ENV=databricks` and
-`PG*`/`ENDPOINT_NAME` environment contract before importing
-`app.database.get_connection()`. The notebook does not decode a second secret
-or create its own `psycopg2.connect` configuration.
+These values populate the standard `PG*`/`ENDPOINT_NAME` environment contract.
+The notebook defines a small local `get_connection()` context manager that
+generates a fresh credential with
+`WorkspaceClient().postgres.generate_database_credential(...)`, connects with
+psycopg2 and `RealDictCursor`, and closes every connection. It stores no
+database password or OAuth token.
 
 The configured Databricks identity must be allowed to connect to the Lakebase
 endpoint and create tables and indexes in the target schema.

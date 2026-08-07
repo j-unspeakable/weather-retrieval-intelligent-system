@@ -1,0 +1,1 @@
+"""Weather Intelligence application package."""

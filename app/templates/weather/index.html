@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}Weather Documents · Weather Intelligence{% endblock %}
+
+{% block content %}
+  <section class="overview" aria-label="Ingestion overview">
+    <div>
+      <p class="eyebrow dark">Lakebase ingestion console</p>
+      <h2>Choose the coverage you need</h2>
+      <p>Use state coverage for regional documents or point coverage for city-level precision. All selected records are normalized into the same <code>weather_documents</code> table.</p>
+    </div>
+    <div class="source-key" aria-label="Available source types">
+      <span><i class="key-dot zone"></i> Zone forecast</span>
+      <span><i class="key-dot hourly"></i> Hourly</span>
+      <span><i class="key-dot observation"></i> Observation</span>
+      <span><i class="key-dot alert"></i> Alert</span>
+    </div>
+  </section>
+
+  {% if synced is not none %}
+    <p class="feedback success" role="status">Successfully synced {{ synced }} weather document{% if synced != 1 %}s{% endif %}.</p>
+  {% endif %}
+  {% if error %}
+    <p class="feedback error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <section class="sync-grid" aria-label="Weather synchronization options">
+    <article class="panel sync-card state-card">
+      <div class="card-heading">
+        <span class="step">01</span>
+        <div>
+          <h2>Sync by state</h2>
+          <p>Load every NWS forecast zone in one or more states.</p>
+        </div>
+      </div>
+
+      <form id="state-sync-form">
+        <div class="field-group">
+          <label for="states">States</label>
+          <span class="field-hint">Use Ctrl/Cmd or Shift to select several.</span>
+          <select id="states" name="states" multiple size="8" required>
+            {% for code, name in states.items() %}
+              <option value="{{ code }}">{{ name }} ({{ code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <fieldset>
+          <legend>Source types</legend>
+          <label class="check-card">
+            <input type="checkbox" name="state_source_types" value="zone_forecast" checked>
+            <span><strong>Zone forecasts</strong><small>All forecast zones</small></span>
+          </label>
+          <label class="check-card">
+            <input type="checkbox" name="state_source_types" value="alert" checked>
+            <span><strong>Active alerts</strong><small>Fetched once per state</small></span>
+          </label>
+          <label class="check-card">
+            <input type="checkbox" name="state_source_types" value="observation">
+            <span><strong>Observations</strong><small>Latest station reports</small></span>
+          </label>
+        </fieldset>
+
+        <div class="field-group compact-field">
+          <label for="station-limit">Maximum reporting stations</label>
+          <input id="station-limit" type="number" min="1" max="200" value="25" required>
+          <span class="field-hint">Used only when observations are selected.</span>
+        </div>
+
+        <button type="submit" class="primary-button">Sync selected states</button>
+      </form>
+    </article>
+
+    <article class="panel sync-card point-card">
+      <div class="card-heading">
+        <span class="step">02</span>
+        <div>
+          <h2>Sync precise locations</h2>
+          <p>Enter one <strong>City, ST</strong> or <strong>lat,lon</strong> per line.</p>
+        </div>
+      </div>
+
+      <form id="point-sync-form" action="/weather/sync-form" method="post">
+        <div class="field-group">
+          <label for="locations">Locations</label>
+          <textarea id="locations" name="locations" rows="7" placeholder="Chicago, IL&#10;Austin, TX&#10;47.6062,-122.3321" required></textarea>
+        </div>
+
+        <fieldset>
+          <legend>Source types</legend>
+          <label class="check-card">
+            <input type="checkbox" name="source_types" value="forecast" checked>
+            <span><strong>Forecast</strong><small>12-hour periods</small></span>
+          </label>
+          <label class="check-card">
+            <input type="checkbox" name="source_types" value="hourly_forecast">
+            <span><strong>Hourly forecast</strong><small>Hour-by-hour</small></span>
+          </label>
+          <label class="check-card">
+            <input type="checkbox" name="source_types" value="observation">
+            <span><strong>Observation</strong><small>Nearest station</small></span>
+          </label>
+          <label class="check-card">
+            <input type="checkbox" name="source_types" value="alert" checked>
+            <span><strong>Active alerts</strong><small>For each point</small></span>
+          </label>
+        </fieldset>
+
+        <div class="field-group compact-field">
+          <label for="limit">Documents per location</label>
+          <input id="limit" name="limit" type="number" min="1" value="{{ default_limit }}" required>
+          <span class="field-hint">Applied after the selected point sources are combined.</span>
+        </div>
+
+        <button type="submit" class="secondary-button">Sync precise locations</button>
+      </form>
+    </article>
+  </section>
+
+  <section id="sync-progress" class="panel progress-panel" hidden aria-live="polite">
+    <div class="progress-heading">
+      <div>
+        <p class="eyebrow dark">Sync activity</p>
+        <h2 id="progress-title">Preparing synchronization</h2>
+      </div>
+      <strong id="progress-count">0 / 0</strong>
+    </div>
+    <progress id="progress-bar" value="0" max="1">0%</progress>
+    <p id="progress-status" class="progress-status">Waiting to begin…</p>
+    <ol id="sync-results" class="sync-results"></ol>
+  </section>
+
+  <section class="panel" aria-labelledby="documents-heading">
+    <div class="section-heading">
+      <div>
+        <h2 id="documents-heading">Recent weather documents</h2>
+        <p>The latest normalized source records stored in Lakebase.</p>
+      </div>
+      <div class="document-tools">
+        <label class="sr-only" for="document-filter">Filter documents</label>
+        <input id="document-filter" type="search" placeholder="Filter location or type">
+        <span class="record-count"><span id="visible-count">{{ documents | length }}</span> shown</span>
+      </div>
+    </div>
+
+    {% if documents %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Synced</th>
+              <th>Location</th>
+              <th>Type</th>
+              <th>Headline</th>
+              <th>Narrative</th>
+              <th>Effective</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for document in documents %}
+              <tr data-document-row>
+                <td class="nowrap">{{ document.synced_at }}</td>
+                <td>
+                  <strong>{{ document.location }}</strong>
+                  {% if document.latitude is not none and document.longitude is not none %}
+                    <span class="coordinates">{{ document.latitude }}, {{ document.longitude }}</span>
+                  {% else %}
+                    <span class="coordinates">Regional coverage</span>
+                  {% endif %}
+                </td>
+                <td><span class="badge {{ document.source_type }}">{{ document.source_type }}</span></td>
+                <td>{{ document.headline or "—" }}</td>
+                <td class="narrative">{{ document.narrative_text }}</td>
+                <td class="nowrap">{{ document.effective_at or "—" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">No weather documents have been ingested yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', path='/weather.js') }}" defer></script>
+{% endblock %}

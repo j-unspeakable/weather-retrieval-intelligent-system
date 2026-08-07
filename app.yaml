@@ -1,0 +1,21 @@
+command:
+  - uvicorn
+  - app.main:app
+  - --workers
+  - "1"
+
+env:
+  - name: APP_ENV
+    value: databricks
+  - name: ENDPOINT_NAME
+    valueFrom: postgres
+  - name: WEATHER_USER_AGENT
+    value: "weather-retrieval-system/0.1 (Databricks App)"
+  - name: NWS_API_BASE_URL
+    value: "https://api.weather.gov"
+  - name: GEOCODING_API_BASE_URL
+    value: "https://geocoding-api.open-meteo.com/v1"
+  - name: WEATHER_REQUEST_TIMEOUT
+    value: "30"
+  - name: RECENT_WEATHER_LIMIT
+    value: "100"

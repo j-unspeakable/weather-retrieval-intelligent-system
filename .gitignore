@@ -1,0 +1,16 @@
+.env
+.venv/
+.agents/
+.codex/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+ingest_ticker*

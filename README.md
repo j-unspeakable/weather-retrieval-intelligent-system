@@ -1,4 +1,4 @@
-# Weather Intelligence — Parts 1, 2, and 3
+# Weather Retrieval Intelligent System
 
 A FastAPI application that retrieves raw forecasts, alerts, and observations
 from the National Weather Service, normalizes them, and upserts them into

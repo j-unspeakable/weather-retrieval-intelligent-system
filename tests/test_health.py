@@ -5,6 +5,7 @@ from pydantic import ValidationError
 import yaml
 
 from app.config import Settings
+from app.main import APP_DIR, app, favicon
 from app.routers.health import healthz, home
 
 
@@ -42,6 +43,34 @@ def test_home_redirects_to_weather_ui():
 
     assert response.status_code == 307
     assert response.headers["location"] == "/weather"
+
+
+def test_static_assets_and_favicon_are_served_from_same_origin():
+    route_paths = {
+        route.path for route in app.routes if hasattr(route, "path")
+    }
+    favicon_response = favicon()
+
+    assert "/static" in route_paths
+    assert "/favicon.ico" in route_paths
+    assert (APP_DIR / "static" / "styles.css").is_file()
+    assert (APP_DIR / "static" / "weather.js").is_file()
+    assert (APP_DIR / "static" / "favicon.svg").is_file()
+    assert Path(favicon_response.path) == APP_DIR / "static" / "favicon.svg"
+    assert favicon_response.media_type == "image/svg+xml"
+
+
+def test_templates_do_not_generate_proxy_dependent_asset_urls():
+    base_template = Path("app/templates/base.html").read_text(encoding="utf-8")
+    weather_template = Path("app/templates/weather/index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'href="/favicon.ico"' in base_template
+    assert 'href="/static/styles.css"' in base_template
+    assert 'src="/static/weather.js"' in weather_template
+    assert "url_for('static'" not in base_template
+    assert "url_for('static'" not in weather_template
 
 
 def test_local_settings_accept_standard_postgres_names(monkeypatch):

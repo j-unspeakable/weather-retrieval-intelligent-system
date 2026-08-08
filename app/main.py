@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -20,5 +21,16 @@ APP_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="Weather Intelligence", version="0.1.0")
 app.state.templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    """Serve the application icon at the conventional browser URL."""
+    return FileResponse(
+        APP_DIR / "static" / "favicon.svg",
+        media_type="image/svg+xml",
+    )
+
+
 app.include_router(health.router)
 app.include_router(weather.router)

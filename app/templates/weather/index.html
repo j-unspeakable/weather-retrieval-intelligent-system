@@ -1,19 +1,18 @@
 {% extends "base.html" %}
 
-{% block title %}Weather Documents · Weather Intelligence{% endblock %}
+{% block title %}Weather Console · Weather Intelligence{% endblock %}
 
 {% block content %}
   <section class="overview" aria-label="Ingestion overview">
-    <div>
-      <p class="eyebrow dark">Lakebase ingestion console</p>
-      <h2>Choose the coverage you need</h2>
-      <p>Use state coverage for regional documents or point coverage for city-level precision. All selected records are normalized into the same <code>weather_documents</code> table.</p>
+    <div class="overview-copy">
+      <p class="eyebrow dark">Weather intelligence workspace</p>
+      <h2>Collect broadly. Search precisely.</h2>
+      <p>Build a useful Lakebase weather corpus with regional or point-level ingestion, then retrieve the most relevant narrative chunks by meaning.</p>
     </div>
-    <div class="source-key" aria-label="Available source types">
-      <span><i class="key-dot zone"></i> Zone forecast</span>
-      <span><i class="key-dot hourly"></i> Hourly</span>
-      <span><i class="key-dot observation"></i> Observation</span>
-      <span><i class="key-dot alert"></i> Alert</span>
+    <div class="workflow-key" aria-label="Available workflows">
+      <span><strong>01</strong> State coverage</span>
+      <span><strong>02</strong> Precise locations</span>
+      <span><strong>03</strong> Semantic search</span>
     </div>
   </section>
 
@@ -24,25 +23,86 @@
     <p class="feedback error" role="alert">{{ error }}</p>
   {% endif %}
 
+  <section class="panel summary-panel" aria-labelledby="summary-heading">
+    <div class="summary-heading">
+      <div>
+        <p class="eyebrow dark">Lakebase snapshot</p>
+        <h2 id="summary-heading">Weather corpus at a glance</h2>
+      </div>
+      <p class="summary-updated">
+        {% if summary.last_synced_at %}
+          Last updated {{ summary.last_synced_at }}
+        {% else %}
+          Waiting for the first sync
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="metric-grid">
+      <article class="metric-card primary-metric">
+        <span class="metric-label">Documents</span>
+        <strong>{{ "{:,}".format(summary.total_documents) }}</strong>
+        <small>Normalized weather records</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Embeddings</span>
+        <strong>{{ "{:,}".format(summary.get("total_embeddings", 0)) }}</strong>
+        <small>Searchable narrative chunks</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Locations</span>
+        <strong>{{ "{:,}".format(summary.total_locations) }}</strong>
+        <small>Distinct point and regional labels</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Source types</span>
+        <strong>{{ summary.source_type_count }}</strong>
+        <small>Categories currently represented</small>
+      </article>
+    </div>
+
+    <div class="source-breakdown" aria-label="Documents by source type">
+      {% for source_type in search_source_types %}
+        <span class="source-stat">
+          <i class="key-dot {{ source_type.value }}"></i>
+          <span>{{ source_type.value | replace("_", " ") }}</span>
+          <strong>{{ "{:,}".format(summary.source_counts.get(source_type.value, 0)) }}</strong>
+        </span>
+      {% endfor %}
+    </div>
+  </section>
+
   <section class="sync-grid" aria-label="Weather synchronization options">
     <article class="panel sync-card state-card">
       <div class="card-heading">
         <span class="step">01</span>
         <div>
-          <h2>Sync by state</h2>
-          <p>Load every NWS forecast zone in one or more states.</p>
+          <span class="coverage-label">Regional coverage</span>
+          <h2>Build a state-wide corpus</h2>
+          <p>Select one or more states to collect forecast zones, alerts, and optional station observations.</p>
         </div>
       </div>
 
       <form id="state-sync-form">
         <div class="field-group">
-          <label for="states">States</label>
-          <span class="field-hint">Use Ctrl/Cmd or Shift to select several.</span>
-          <select id="states" name="states" multiple size="8" required>
+          <div class="picker-heading">
+            <div>
+              <span class="field-label" id="states-label">States</span>
+              <span class="field-hint">Choose any combination; each state is synced separately. <strong id="selected-state-count">0 selected</strong></span>
+            </div>
+            <div class="picker-actions">
+              <button id="select-all-states" type="button" class="text-button">Select all</button>
+              <button id="clear-all-states" type="button" class="text-button">Clear</button>
+            </div>
+          </div>
+          <div id="states" class="state-picker" role="group" aria-labelledby="states-label">
             {% for code, name in states.items() %}
-              <option value="{{ code }}">{{ name }} ({{ code }})</option>
+              <label class="state-option" title="{{ name }}">
+                <input type="checkbox" name="states" value="{{ code }}">
+                <span><strong>{{ code }}</strong><small>{{ name }}</small></span>
+              </label>
             {% endfor %}
-          </select>
+          </div>
         </div>
 
         <fieldset>
@@ -61,13 +121,14 @@
           </label>
         </fieldset>
 
-        <div class="field-group compact-field">
-          <label for="station-limit">Maximum reporting stations</label>
-          <input id="station-limit" type="number" min="1" max="200" value="25" required>
-          <span class="field-hint">Used only when observations are selected.</span>
+        <div class="sync-settings">
+          <div class="field-group compact-field">
+            <label for="station-limit">Station limit</label>
+            <input id="station-limit" type="number" min="1" max="200" value="25" required>
+            <span class="field-hint">Only applies to observations.</span>
+          </div>
+          <button id="sync-selected-states" type="submit" class="primary-button">Sync selected states</button>
         </div>
-
-        <button type="submit" class="primary-button">Sync selected states</button>
       </form>
     </article>
 
@@ -75,8 +136,9 @@
       <div class="card-heading">
         <span class="step">02</span>
         <div>
-          <h2>Sync precise locations</h2>
-          <p>Enter one <strong>City, ST</strong> or <strong>lat,lon</strong> per line.</p>
+          <span class="coverage-label">Point coverage</span>
+          <h2>Target precise locations</h2>
+          <p>Collect detailed conditions for cities or coordinates, processed one location at a time.</p>
         </div>
       </div>
 
@@ -84,6 +146,10 @@
         <div class="field-group">
           <label for="locations">Locations</label>
           <textarea id="locations" name="locations" rows="7" placeholder="Chicago, IL&#10;Austin, TX&#10;47.6062,-122.3321" required></textarea>
+          <div class="format-examples" aria-label="Accepted location formats">
+            <span><strong>City</strong> Chicago, IL</span>
+            <span><strong>Coordinates</strong> 47.6062,-122.3321</span>
+          </div>
         </div>
 
         <fieldset>
@@ -106,13 +172,14 @@
           </label>
         </fieldset>
 
-        <div class="field-group compact-field">
-          <label for="limit">Documents per location</label>
-          <input id="limit" name="limit" type="number" min="1" value="{{ default_limit }}" required>
-          <span class="field-hint">Applied after the selected point sources are combined.</span>
+        <div class="sync-settings">
+          <div class="field-group compact-field">
+            <label for="limit">Documents per location</label>
+            <input id="limit" name="limit" type="number" min="1" value="{{ default_limit }}" required>
+            <span class="field-hint">Maximum after sources are combined.</span>
+          </div>
+          <button type="submit" class="secondary-button">Sync precise locations</button>
         </div>
-
-        <button type="submit" class="secondary-button">Sync precise locations</button>
       </form>
     </article>
   </section>
@@ -130,57 +197,91 @@
     <ol id="sync-results" class="sync-results"></ol>
   </section>
 
-  <section class="panel" aria-labelledby="documents-heading">
-    <div class="section-heading">
+  <section class="panel search-panel" aria-labelledby="search-heading">
+    <div class="section-heading search-heading">
       <div>
-        <h2 id="documents-heading">Recent weather documents</h2>
-        <p>The latest normalized source records stored in Lakebase.</p>
-      </div>
-      <div class="document-tools">
-        <label class="sr-only" for="document-filter">Filter documents</label>
-        <input id="document-filter" type="search" placeholder="Filter location or type">
-        <span class="record-count"><span id="visible-count">{{ documents | length }}</span> shown</span>
+        <p class="eyebrow dark">Vector retrieval</p>
+        <h2 id="search-heading">Semantic Weather Search</h2>
+        <p>Find relevant forecast, alert, and observation passages by meaning. Similarity is calculated against embedded narrative chunks.</p>
       </div>
     </div>
 
-    {% if documents %}
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Synced</th>
-              <th>Location</th>
-              <th>Type</th>
-              <th>Headline</th>
-              <th>Narrative</th>
-              <th>Effective</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for document in documents %}
-              <tr data-document-row>
-                <td class="nowrap">{{ document.synced_at }}</td>
-                <td>
-                  <strong>{{ document.location }}</strong>
-                  {% if document.latitude is not none and document.longitude is not none %}
-                    <span class="coordinates">{{ document.latitude }}, {{ document.longitude }}</span>
-                  {% else %}
-                    <span class="coordinates">Regional coverage</span>
-                  {% endif %}
-                </td>
-                <td><span class="badge {{ document.source_type }}">{{ document.source_type }}</span></td>
-                <td>{{ document.headline or "—" }}</td>
-                <td class="narrative">{{ document.narrative_text }}</td>
-                <td class="nowrap">{{ document.effective_at or "—" }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+    <form class="search-form" action="/weather/search-form" method="post">
+      <div class="field-group search-query-field">
+        <label for="search-query">Search query</label>
+        <input
+          id="search-query"
+          name="query"
+          type="search"
+          value="{{ search_query }}"
+          placeholder="Risk of severe thunderstorms"
+          required
+        >
       </div>
-    {% else %}
-      <p class="empty-state">No weather documents have been ingested yet.</p>
-    {% endif %}
+
+      <div class="field-group search-limit-field">
+        <label for="search-top-k">Results</label>
+        <input
+          id="search-top-k"
+          name="top_k"
+          type="number"
+          min="1"
+          max="20"
+          value="{{ search_top_k }}"
+          required
+        >
+      </div>
+
+      <div class="field-group search-source-field">
+        <label for="search-source-type">Source type</label>
+        <select id="search-source-type" name="source_type">
+          <option value="" {% if not search_source_type %}selected{% endif %}>All</option>
+          {% for source_type in search_source_types %}
+            <option value="{{ source_type.value }}" {% if search_source_type == source_type.value %}selected{% endif %}>{{ source_type.value }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <button type="submit" class="search-button">Search weather</button>
+    </form>
+
+    <div class="search-feedback{% if search_error or search_performed or search_results %} has-content{% endif %}" aria-live="polite">
+      {% if search_error %}
+        <p class="feedback error" role="alert">{{ search_error }}</p>
+      {% elif search_performed and not search_results %}
+        <p class="empty-state">No embedded weather documents matched this search.</p>
+      {% elif search_results %}
+        {% if search_summary %}
+          <article class="rag-answer" aria-labelledby="rag-answer-heading">
+            <span class="coverage-label">Grounded answer</span>
+            <h3 id="rag-answer-heading">Weather summary</h3>
+            <p>{{ search_summary }}</p>
+            <small>Generated from the ranked passages below. Verify critical decisions against official NWS guidance.</small>
+          </article>
+        {% endif %}
+        <p class="search-summary">Found {{ search_results | length }} matching chunk{% if search_results | length != 1 %}s{% endif %}, ranked by cosine similarity.</p>
+        <ol class="search-results">
+          {% for result in search_results %}
+            <li class="search-result-card">
+              <div class="search-result-meta">
+                <span class="result-rank">Result {{ loop.index }}</span>
+                <span class="similarity-score">{{ "%.3f" | format(result.similarity) }} similarity</span>
+                <span class="badge {{ result.source_type.value }}">{{ result.source_type.value }}</span>
+                <span class="search-location">{{ result.location }}</span>
+              </div>
+              <h3>{{ result.headline or "—" }}</h3>
+              <p class="matching-chunk">{{ result.chunk_text }}</p>
+              <details>
+                <summary>View complete source narrative</summary>
+                <p>{{ result.narrative_text }}</p>
+              </details>
+            </li>
+          {% endfor %}
+        </ol>
+      {% endif %}
+    </div>
   </section>
+
 {% endblock %}
 
 {% block scripts %}

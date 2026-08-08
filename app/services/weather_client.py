@@ -1,14 +1,22 @@
 """Synchronous clients and normalization for external weather APIs."""
 
 import hashlib
+import logging
 import re
+import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from app.config import Settings, get_settings
 from app.models import StateWeatherBatch, US_STATES, WeatherDocument
+
+
+logger = logging.getLogger(__name__)
 
 
 class WeatherClientError(RuntimeError):
@@ -29,6 +37,7 @@ _COORDINATE_RE = re.compile(
 )
 _CITY_STATE_RE = re.compile(r"^\s*(.+?)\s*,\s*([A-Za-z]{2})\s*$")
 
+
 class WeatherClient:
     """Thin synchronous client for geocoding and api.weather.gov."""
 
@@ -38,13 +47,34 @@ class WeatherClient:
         session: requests.Session | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self._session = session or requests.Session()
+        self._session = session or self._create_session()
         self._session.headers.update(
             {
                 "User-Agent": self.settings.weather_user_agent,
                 "Accept": "application/geo+json, application/json",
             }
         )
+
+    def _create_session(self) -> requests.Session:
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=2,
+            status=2,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET"}),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=self.settings.weather_state_sync_workers,
+            pool_maxsize=self.settings.weather_state_sync_workers,
+        )
+        session = requests.Session()
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return session
 
     def close(self) -> None:
         self._session.close()
@@ -184,6 +214,7 @@ class WeatherClient:
         station_limit: int = 25,
     ) -> StateWeatherBatch:
         """Fetch selected document types across one U.S. state."""
+        started_at = time.monotonic()
         state = state.strip().upper()
         state_name = US_STATES.get(state)
         if state_name is None:
@@ -197,6 +228,14 @@ class WeatherClient:
         zones_processed = 0
         stations_processed = 0
 
+        logger.info(
+            "State weather fetch started state=%s source_types=%s station_limit=%d workers=%d",
+            state,
+            sorted(enabled),
+            station_limit,
+            self.settings.weather_state_sync_workers,
+        )
+
         if "zone_forecast" in enabled:
             zone_data = self._get_json(
                 f"{self.settings.nws_api_base_url}/zones",
@@ -207,7 +246,16 @@ class WeatherClient:
                     "limit": 500,
                 },
             )
-            for zone in self._features(zone_data, "forecast zone"):
+            zones = self._features(zone_data, "forecast zone")
+            logger.info(
+                "State zone discovery completed state=%s zones=%d",
+                state,
+                len(zones),
+            )
+
+            def fetch_zone(
+                zone: dict[str, Any],
+            ) -> tuple[str, list[WeatherDocument]]:
                 zone_id = self._feature_identifier(zone, "forecast zone")
                 properties = zone.get("properties", {})
                 zone_name = (
@@ -219,13 +267,42 @@ class WeatherClient:
                 forecast_data = self._get_json(
                     f"{self.settings.nws_api_base_url}/zones/forecast/{zone_id}/forecast"
                 )
-                zone_documents.extend(
+                return (
+                    zone_location,
                     self._normalize_zone_forecast(
                         zone_location,
                         zone_id,
                         forecast_data,
-                    )
+                    ),
                 )
+
+            zone_results: list[tuple[str, list[WeatherDocument]] | None] = [
+                None
+            ] * len(zones)
+            workers = min(self.settings.weather_state_sync_workers, len(zones))
+            if workers:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(fetch_zone, zone): index
+                        for index, zone in enumerate(zones)
+                    }
+                    completed = 0
+                    for future in as_completed(futures):
+                        zone_results[futures[future]] = future.result()
+                        completed += 1
+                        if completed == len(zones) or completed % 10 == 0:
+                            logger.info(
+                                "State zone forecasts progress state=%s completed=%d total=%d",
+                                state,
+                                completed,
+                                len(zones),
+                            )
+
+            for result in zone_results:
+                if result is None:
+                    continue
+                zone_location, documents = result
+                zone_documents.extend(documents)
                 locations.append(zone_location)
                 zones_processed += 1
 
@@ -234,15 +311,27 @@ class WeatherClient:
                 f"{self.settings.nws_api_base_url}/stations",
                 params={"state": state, "limit": station_limit},
             )
-            for station in self._features(station_data, "observation station")[
+            stations = self._features(station_data, "observation station")[
                 :station_limit
-            ]:
-                document = self._fetch_latest_observation(
-                    station,
-                    requested_location=None,
-                    fallback_state=state,
-                    allow_missing=True,
+            ]
+
+            def fetch_station(station: dict[str, Any]) -> WeatherDocument | None:
+                return self._fetch_latest_observation(
+                    station, None, state, allow_missing=True
                 )
+
+            station_results: list[WeatherDocument | None] = [None] * len(stations)
+            workers = min(self.settings.weather_state_sync_workers, len(stations))
+            if workers:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(fetch_station, station): index
+                        for index, station in enumerate(stations)
+                    }
+                    for future in as_completed(futures):
+                        station_results[futures[future]] = future.result()
+
+            for document in station_results:
                 if document is None:
                     continue
                 observation_documents.append(document)
@@ -262,13 +351,22 @@ class WeatherClient:
             )
             locations.append(state_name)
 
-        return StateWeatherBatch(
+        batch = StateWeatherBatch(
             state=state,
             documents=zone_documents + observation_documents + alert_documents,
             locations=list(dict.fromkeys(locations)),
             zones_processed=zones_processed,
             stations_processed=stations_processed,
         )
+        logger.info(
+            "State weather fetch completed state=%s zones=%d stations=%d documents=%d elapsed_seconds=%.2f",
+            state,
+            zones_processed,
+            stations_processed,
+            len(batch.documents),
+            time.monotonic() - started_at,
+        )
+        return batch
 
     def _normalize_documents(
         self,
@@ -593,6 +691,7 @@ class WeatherClient:
         params: dict[str, Any] | None = None,
         allow_not_found: bool = False,
     ) -> Any:
+        started_at = time.monotonic()
         try:
             response = self._session.get(
                 url,
@@ -602,10 +701,37 @@ class WeatherClient:
             if allow_not_found and getattr(response, "status_code", None) == 404:
                 return None
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            logger.debug(
+                "Weather API request completed url=%s status=%s elapsed_seconds=%.2f",
+                url,
+                getattr(response, "status_code", "unknown"),
+                time.monotonic() - started_at,
+            )
+            return data
         except requests.RequestException as exc:
-            raise WeatherAPIError("An upstream weather request failed.") from exc
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "Weather API request failed url=%s status=%s elapsed_seconds=%.2f error=%s",
+                url,
+                status_code or "unavailable",
+                time.monotonic() - started_at,
+                exc,
+                exc_info=True,
+            )
+            detail = (
+                f"weather.gov returned HTTP {status_code}."
+                if status_code
+                else "An upstream weather request timed out or failed."
+            )
+            raise WeatherAPIError(detail) from exc
         except ValueError as exc:
+            logger.warning(
+                "Weather API returned invalid JSON url=%s elapsed_seconds=%.2f",
+                url,
+                time.monotonic() - started_at,
+                exc_info=True,
+            )
             raise WeatherAPIError("An upstream weather service returned invalid JSON.") from exc
 
     @staticmethod

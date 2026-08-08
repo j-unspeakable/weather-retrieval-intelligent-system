@@ -1,15 +1,18 @@
-# Weather Intelligence — Parts 1 and 2
+# Weather Intelligence — Parts 1, 2, and 3
 
 A FastAPI application that retrieves raw forecasts, alerts, and observations
 from the National Weather Service, normalizes them, and upserts them into
 Databricks Lakebase. A server-rendered Jinja page supports both precise point
 locations and state-wide NWS forecast-zone coverage. A separate Databricks
 notebook chunks the stored narratives and creates MiniLM vector embeddings.
+The FastAPI app embeds search queries with the same model, performs pgvector
+cosine-similarity retrieval, and calls OpenRouter's chat-completions API for a
+short answer grounded in the ranked chunks.
 
 This repository implements **Part 1: raw weather ingestion** and **Part 2:
-the offline vectorization pipeline**. It does not implement vector search,
-query embeddings, RAG, Spark, scheduled jobs, or the stock/news functionality
-from the Day 2 reference application.
+the offline vectorization pipeline**, and **Part 3: semantic retrieval**. It
+does not implement conversational memory, agents, Spark, scheduled jobs, or
+the stock/news functionality from the Day 2 reference application.
 
 ## Application structure
 
@@ -18,6 +21,10 @@ from the Day 2 reference application.
 - `app/services/weather_client.py` performs synchronous Open-Meteo geocoding
   and weather.gov point, zone, station, forecast, and alert requests.
 - `app/services/weather.py` coordinates fetch, limit, and persistence behavior.
+- `app/services/embeddings.py` lazily loads the query embedding model once per
+  app worker and validates 384-dimensional query vectors.
+- `app/services/llm.py` calls OpenRouter with the ranked chunks and validates
+  the returned grounded summary.
 - `app/database.py` generates Lakebase OAuth credentials and contains direct
   psycopg2 DDL, upsert, and read logic.
 - `app/routers/weather.py` exposes both JSON and HTML workflows.
@@ -86,6 +93,26 @@ deployment authentication or DDL fails.
 Set `WEATHER_USER_AGENT` to an identifiable application name with contact
 information. No weather or geocoding API key is required.
 
+`WEATHER_STATE_SYNC_WORKERS` controls the bounded concurrency used for NWS
+zone forecasts and station observations. It defaults to 6 and is validated
+from 1 through 12. `WEATHER_REQUEST_TIMEOUT` remains the timeout for each
+individual upstream request.
+
+Grounded summaries use OpenRouter's OpenAI-compatible API. Create an OpenRouter
+API key and configure `LLM_API_KEY`; the default model is `openrouter/free`,
+the base URL is `https://openrouter.ai/api/v1`, and the request timeout is 45
+seconds. For a Databricks App, add the key as a **Secret** app resource with
+resource key `openrouter-api-key`; `app.yaml` maps its decrypted value to
+`LLM_API_KEY`. Health checks and ingestion can start without this setting, but
+searches with results require it. The LLM remains remote and no generative
+model weights are downloaded into the application.
+
+OpenRouter's free router is intended for low-volume development and may choose
+different free models as availability changes. Its free-model quota and
+latency are provider-controlled and do not carry a production SLA. Pin a
+specific model in `LLM_MODEL_NAME` or move to a paid route when predictable
+model behavior is required.
+
 ## Install and run
 
 ```bash
@@ -100,11 +127,15 @@ and non-secret defaults used by Databricks Apps are in `app.yaml`.
 ## Endpoints
 
 - `GET /healthz` — lightweight health check without a database call.
-- `GET /weather` — state/point sync console and recent ingested rows.
+- `GET /weather` — state/point sync console, Lakebase document/embedding
+  summary, and semantic search interface.
 - `POST /weather/sync` — point-location JSON ingestion endpoint.
 - `POST /weather/sync-state` — one-state JSON ingestion endpoint used by the
   progress UI.
 - `POST /weather/sync-form` — form ingestion endpoint used by the frontend.
+- `POST /weather/search` — semantic search JSON endpoint.
+- `GET /weather/search` — query-parameter variant of semantic search.
+- `POST /weather/search-form` — server-rendered semantic search form.
 
 Example JSON request:
 
@@ -142,9 +173,20 @@ fetched once using the state area code. Observations are optional because each
 station requires an additional request; `station_limit` is strictly validated
 from 1 through 200 and defaults to 25.
 
+Large states can contain more than 100 NWS forecast zones. Zone forecasts and
+station observations therefore use bounded concurrent GET requests with retry
+handling for transient 429/5xx responses. Normalized documents retain
+deterministic source ordering and are written to Lakebase with batched
+`execute_values` upserts rather than one database round trip per document.
+Application logs report state start, zone discovery, every ten completed zone
+forecasts, Lakebase upsert start/completion, elapsed time, and upstream status
+details when failures occur.
+
 The browser processes selected states or point locations sequentially. Its
 progress panel reports the active item, completion/failure status, and document
-count, then reloads the page so the recent-document table reflects new rows.
+count, then reloads the page so aggregate document, location, and source-type
+statistics reflect the new rows. The interface intentionally avoids loading
+every stored narrative into the page.
 
 ## Source types
 
@@ -198,8 +240,9 @@ the embedding pipeline and Lakebase OAuth connection:
 %pip install -q sentence-transformers 'psycopg2-binary>=2.9.9' 'databricks-sdk>=0.118.0'
 ```
 
-These notebook-only installs are intentionally not added to the FastAPI
-application's dependency lock.
+Notebook compute does not inherit the FastAPI environment, so it installs its
+own dependencies. Part 3 also includes `sentence-transformers` in the FastAPI
+runtime lock because the web application must embed search queries.
 
 Run the widget-creation cell by itself first. After it completes, enter
 `pg_host` and `endpoint_name` in the notebook widget panel, then run the
@@ -264,6 +307,84 @@ This deliberately simple Part 2 rule does not detect changes to
 already embedded document with edited narrative text will not automatically be
 re-embedded. Document hashes or source-version tracking are deferred beyond
 Part 2.
+
+## Part 3: semantic retrieval
+
+Open `/weather` and use **Semantic Weather Search** beneath the ingestion
+controls. The form accepts a natural-language query, a result count from 1 to
+20, and an optional source filter. It renders an LLM-generated grounded answer
+followed by ranked matching chunks with their source metadata, and keeps the
+complete narrative in a collapsible section.
+
+The same search is available as JSON:
+
+```bash
+curl -X POST http://127.0.0.1:8000/weather/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"risk of severe thunderstorms","top_k":5,"source_type":"alert"}'
+```
+
+or with query parameters:
+
+```bash
+curl 'http://127.0.0.1:8000/weather/search?query=severe%20thunderstorms&top_k=5&source_type=alert'
+```
+
+`query` is trimmed and must not be blank. JSON `top_k` values must be integers;
+valid integers are clamped to 1 through 20 and default to 5. `source_type` is
+optional and uses the application's shared `WeatherSourceType` definition:
+`forecast`, `hourly_forecast`, `zone_forecast`, `alert`, or `observation`.
+Both POST and GET return a nullable `summary` alongside `results`. When there
+are matches, the summary is generated by OpenRouter from those retrieved
+chunks. When retrieval returns no rows, the application skips the external API
+call and returns `summary: null` with `results: []`.
+
+Example response shape:
+
+```json
+{
+  "query": "risk of severe thunderstorms",
+  "top_k": 5,
+  "source_type": "alert",
+  "summary": "Severe thunderstorm hazards are present in the retrieved alerts [1].",
+  "results": [
+    {
+      "document_id": "urn:nws:alert:example",
+      "source_type": "alert",
+      "location": "Illinois",
+      "headline": "Severe Thunderstorm Warning",
+      "narrative_text": "Full source narrative...",
+      "chunk_text": "Matching embedded passage...",
+      "similarity": 0.83
+    }
+  ]
+}
+```
+
+Search uses `sentence-transformers/all-MiniLM-L6-v2`, the same 384-dimensional
+model used by the Part 2 notebook. The application loads it lazily and caches
+one model instance per process. The first search may take longer and requires
+access to download the model from Hugging Face unless its files are already
+cached. Each additional Uvicorn worker loads a separate model copy.
+
+The FastAPI runtime binds `torch` to PyTorch's CPU-only package index through
+`tool.uv.sources`. This avoids downloading CUDA, NVIDIA, and Triton packages
+that are unnecessary for the application's CPU-based query embedding.
+
+Cosine similarity is calculated only against
+`weather_embeddings.embedding` using pgvector's `<=>` operator. The ranked
+embedding rows are joined through `weather_embeddings.document_id =
+weather_documents.id` so responses can include the original location, source
+type, headline, and narrative without duplicating those values in the
+embedding table. An empty or nonmatching embedding table produces an empty
+result list.
+
+The Part 2 uniqueness constraint on `(document_id, chunk_index, model_name)`
+keeps stored chunks deduplicated. Part 3 is read-only and does not regenerate
+or update embeddings. The RAG prompt treats retrieved text as untrusted data,
+requires the answer to use only supplied context, requests numbered citations,
+and limits output to 300 tokens. Conversational memory, LLM-generated source
+data, and scheduled ingestion remain out of scope.
 
 ## Tests
 

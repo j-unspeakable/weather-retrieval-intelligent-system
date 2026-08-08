@@ -65,6 +65,11 @@ async function runSequential(items, title, requestItem, summarize) {
 
   for (const [index, item] of items.entries()) {
     progressStatus.textContent = `Syncing ${item.label}…`;
+    const itemStartedAt = Date.now();
+    const elapsedTimer = window.setInterval(() => {
+      const elapsedSeconds = Math.floor((Date.now() - itemStartedAt) / 1000);
+      progressStatus.textContent = `Syncing ${item.label}… ${elapsedSeconds}s elapsed; upstream requests are still in progress.`;
+    }, 1000);
     try {
       const response = await requestItem(item);
       if (!response.ok) throw new Error(await responseError(response));
@@ -78,6 +83,8 @@ async function runSequential(items, title, requestItem, summarize) {
       const detail = error instanceof Error ? error.message : "Unknown sync error";
       appendResult(item.label, "failed", detail);
       savedResults.push({ label: item.label, status: "failed", detail });
+    } finally {
+      window.clearInterval(elapsedTimer);
     }
     progressBar.value = index + 1;
     progressCount.textContent = `${index + 1} / ${items.length}`;
@@ -101,12 +108,41 @@ async function runSequential(items, title, requestItem, summarize) {
 }
 
 const stateForm = document.querySelector("#state-sync-form");
+const stateCheckboxes = [...document.querySelectorAll('input[name="states"]')];
+const selectedStateCount = document.querySelector("#selected-state-count");
+
+function updateSelectedStateCount() {
+  const count = stateCheckboxes.filter((checkbox) => checkbox.checked).length;
+  if (selectedStateCount) {
+    selectedStateCount.textContent = `${count} selected`;
+  }
+}
+
+stateCheckboxes.forEach((checkbox) => {
+  checkbox.addEventListener("change", updateSelectedStateCount);
+});
+
+document.querySelector("#select-all-states")?.addEventListener("click", () => {
+  stateCheckboxes.forEach((checkbox) => {
+    checkbox.checked = true;
+  });
+  updateSelectedStateCount();
+});
+
+document.querySelector("#clear-all-states")?.addEventListener("click", () => {
+  stateCheckboxes.forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+  updateSelectedStateCount();
+});
+
+updateSelectedStateCount();
+
 stateForm?.addEventListener("submit", (event) => {
   event.preventDefault();
-  const stateSelect = stateForm.querySelector("#states");
-  const states = [...stateSelect.selectedOptions].map((option) => ({
-    value: option.value,
-    label: option.textContent,
+  const states = stateCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => ({
+    value: checkbox.value,
+    label: checkbox.closest("label")?.title || checkbox.value,
   }));
   const sourceTypes = selectedValues(stateForm, "state_source_types");
   const stationLimit = Number(stateForm.querySelector("#station-limit").value);
@@ -180,7 +216,7 @@ if (savedSync) {
     showProgress(summary.title, summary.results.length);
     progressBar.value = summary.results.length;
     progressCount.textContent = `${summary.results.length} / ${summary.results.length}`;
-    progressStatus.textContent = `Complete: ${summary.totalSynced} documents synced. The table below has been refreshed.`;
+    progressStatus.textContent = `Complete: ${summary.totalSynced} documents synced. The Lakebase summary has been refreshed.`;
     summary.results.forEach((result) => {
       appendResult(result.label, result.status, result.detail);
     });
@@ -188,17 +224,3 @@ if (savedSync) {
     sessionStorage.removeItem("weather-sync-results");
   }
 }
-
-const documentFilter = document.querySelector("#document-filter");
-documentFilter?.addEventListener("input", () => {
-  const query = documentFilter.value.trim().toLowerCase();
-  const rows = [...document.querySelectorAll("[data-document-row]")];
-  let visible = 0;
-  rows.forEach((row) => {
-    const matches = row.textContent.toLowerCase().includes(query);
-    row.hidden = !matches;
-    if (matches) visible += 1;
-  });
-  const count = document.querySelector("#visible-count");
-  if (count) count.textContent = String(visible);
-});

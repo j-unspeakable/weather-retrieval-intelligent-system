@@ -1,4 +1,6 @@
 from typing import Any
+import threading
+import time
 
 import pytest
 import requests
@@ -59,7 +61,7 @@ def settings() -> Settings:
         nws_api_base_url="https://api.weather.test",
         geocoding_api_base_url="https://geocoding.test/v1",
         weather_request_timeout=12,
-        recent_weather_limit=100,
+        weather_state_sync_workers=1,
     )
 
 
@@ -430,3 +432,64 @@ def test_state_observation_sync_skips_stations_without_latest_report(settings):
     assert batch.documents == []
     assert batch.locations == []
     assert batch.stations_processed == 0
+
+
+def test_state_zone_forecasts_use_bounded_concurrency_and_preserve_order(settings):
+    zones = [
+        {
+            "id": f"https://api.weather.test/zones/forecast/ILZ00{index}",
+            "properties": {"id": f"ILZ00{index}", "name": f"Zone {index}"},
+        }
+        for index in range(1, 5)
+    ]
+
+    class ConcurrentSession:
+        def __init__(self):
+            self.headers = {}
+            self.lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+
+        def get(self, url, params=None, timeout=None):
+            if url.endswith("/zones"):
+                return FakeResponse({"features": zones})
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            time.sleep(0.02)
+            with self.lock:
+                self.active -= 1
+            return FakeResponse(
+                {
+                    "properties": {
+                        "updated": "2026-08-08T10:00:00Z",
+                        "periods": [
+                            {
+                                "number": 1,
+                                "name": "Today",
+                                "detailedForecast": "Clear.",
+                            }
+                        ],
+                    }
+                }
+            )
+
+        def close(self):
+            return None
+
+    concurrent_settings = settings.model_copy(
+        update={"weather_state_sync_workers": 3}
+    )
+    session = ConcurrentSession()
+    client = WeatherClient(settings=concurrent_settings, session=session)
+
+    batch = client.fetch_state_documents("IL", ["zone_forecast"])
+
+    assert session.max_active == 3
+    assert batch.zones_processed == 4
+    assert batch.locations == [
+        "Zone 1, IL",
+        "Zone 2, IL",
+        "Zone 3, IL",
+        "Zone 4, IL",
+    ]

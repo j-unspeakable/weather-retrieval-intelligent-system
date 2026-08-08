@@ -21,6 +21,10 @@ DATABASE_ENV_NAMES = (
     "PG_SSLMODE",
     "ENDPOINT_NAME",
     "DATABRICKS_CONFIG_PROFILE",
+    "LLM_API_BASE_URL",
+    "LLM_API_KEY",
+    "LLM_MODEL_NAME",
+    "LLM_REQUEST_TIMEOUT",
 )
 
 
@@ -73,6 +77,10 @@ def test_test_environment_does_not_require_lakebase_settings(monkeypatch):
     assert settings.app_env == "test"
     assert settings.pg_host is None
     assert settings.endpoint_name is None
+    assert settings.llm_api_base_url == "https://openrouter.ai/api/v1"
+    assert settings.llm_api_key is None
+    assert settings.llm_model_name == "openrouter/free"
+    assert settings.llm_request_timeout == 45
 
 
 @pytest.mark.parametrize("app_env", ["local", "databricks"])
@@ -108,5 +116,13 @@ def test_app_yaml_uses_databricks_postgres_resource_binding():
         "name": "ENDPOINT_NAME",
         "valueFrom": "postgres",
     }
+    assert environment["LLM_API_KEY"] == {
+        "name": "LLM_API_KEY",
+        "valueFrom": "openrouter-api-key",
+    }
+    assert environment["LLM_API_BASE_URL"]["value"] == (
+        "https://openrouter.ai/api/v1"
+    )
+    assert environment["LLM_MODEL_NAME"]["value"] == "openrouter/free"
     assert "PGHOST" not in environment
     assert "PGUSER" not in environment

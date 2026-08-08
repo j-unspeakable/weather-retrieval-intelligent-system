@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,17 +41,33 @@ class Settings(BaseSettings):
     )
     endpoint_name: str | None = None
     databricks_config_profile: str | None = None
+    llm_api_base_url: str = "https://openrouter.ai/api/v1"
+    llm_api_key: SecretStr | None = None
+    llm_model_name: str = "openrouter/free"
+    llm_request_timeout: int = Field(default=45, ge=1)
 
     weather_user_agent: str = "weather-retrieval-system/0.1"
     nws_api_base_url: str = "https://api.weather.gov"
     geocoding_api_base_url: str = "https://geocoding-api.open-meteo.com/v1"
     weather_request_timeout: int = Field(default=30, ge=1)
-    recent_weather_limit: int = Field(default=100, ge=1)
+    weather_state_sync_workers: int = Field(default=6, ge=1, le=12)
 
-    @field_validator("nws_api_base_url", "geocoding_api_base_url")
+    @field_validator(
+        "nws_api_base_url",
+        "geocoding_api_base_url",
+        "llm_api_base_url",
+    )
     @classmethod
     def trim_base_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @field_validator("llm_model_name")
+    @classmethod
+    def validate_llm_model_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("LLM_MODEL_NAME must not be blank")
+        return value
 
     @model_validator(mode="after")
     def validate_environment(self) -> Self:

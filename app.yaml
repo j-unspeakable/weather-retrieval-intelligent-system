@@ -9,6 +9,14 @@ env:
     value: databricks
   - name: ENDPOINT_NAME
     valueFrom: postgres
+  - name: LLM_API_BASE_URL
+    value: "https://openrouter.ai/api/v1"
+  - name: LLM_API_KEY
+    valueFrom: openrouter-api-key
+  - name: LLM_MODEL_NAME
+    value: "openrouter/free"
+  - name: LLM_REQUEST_TIMEOUT
+    value: "45"
   - name: WEATHER_USER_AGENT
     value: "weather-retrieval-system/0.1 (Databricks App)"
   - name: NWS_API_BASE_URL
@@ -17,5 +25,5 @@ env:
     value: "https://geocoding-api.open-meteo.com/v1"
   - name: WEATHER_REQUEST_TIMEOUT
     value: "30"
-  - name: RECENT_WEATHER_LIMIT
-    value: "100"
+  - name: WEATHER_STATE_SYNC_WORKERS
+    value: "6"

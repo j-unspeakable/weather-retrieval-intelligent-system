@@ -2,9 +2,16 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+)
 
-from app.models import US_STATES
+from app.models import US_STATES, WeatherSourceType
 
 
 StrictPositiveInt = Annotated[int, Field(strict=True, ge=1)]
@@ -75,3 +82,42 @@ class StateWeatherSyncResponse(BaseModel):
     zones_processed: int
     stations_processed: int
     locations: list[str]
+
+
+class WeatherSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: StrictStr
+    top_k: StrictInt = 5
+    source_type: WeatherSourceType | None = None
+
+    @field_validator("query")
+    @classmethod
+    def trim_and_validate_query(cls, query: str) -> str:
+        query = query.strip()
+        if not query:
+            raise ValueError("query must not be blank")
+        return query
+
+    @field_validator("top_k")
+    @classmethod
+    def clamp_top_k(cls, top_k: int) -> int:
+        return min(max(top_k, 1), 20)
+
+
+class WeatherSearchResult(BaseModel):
+    document_id: str
+    source_type: WeatherSourceType
+    location: str
+    headline: str | None
+    narrative_text: str
+    chunk_text: str
+    similarity: float
+
+
+class WeatherSearchResponse(BaseModel):
+    query: str
+    top_k: int
+    source_type: WeatherSourceType | None
+    summary: str | None
+    results: list[WeatherSearchResult]

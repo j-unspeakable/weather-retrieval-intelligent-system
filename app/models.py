@@ -1,6 +1,7 @@
 """Lightweight domain models used by weather ingestion."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 
@@ -22,6 +23,16 @@ US_STATES = {
     "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
     "WI": "Wisconsin", "WY": "Wyoming",
 }
+
+
+class WeatherSourceType(StrEnum):
+    """Weather document source types supported by semantic search."""
+
+    FORECAST = "forecast"
+    HOURLY_FORECAST = "hourly_forecast"
+    ZONE_FORECAST = "zone_forecast"
+    ALERT = "alert"
+    OBSERVATION = "observation"
 
 
 @dataclass(frozen=True, slots=True)

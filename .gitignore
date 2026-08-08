@@ -13,4 +13,3 @@ htmlcov/
 .vscode/
 *.swp
 .DS_Store
-ingest_ticker*

@@ -3,15 +3,19 @@
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
+import logging
 from typing import Any
 
 import psycopg2
 from databricks.sdk import WorkspaceClient
 from psycopg2.extensions import connection as PsycopgConnection
-from psycopg2.extras import Json, RealDictCursor
+from psycopg2.extras import Json, RealDictCursor, execute_values
 
 from app.config import get_settings
 from app.models import WeatherDocument
+
+
+logger = logging.getLogger(__name__)
 
 
 WEATHER_DOCUMENTS_DDL = """
@@ -36,7 +40,7 @@ INSERT INTO weather_documents (
     id, location, latitude, longitude, source_type, headline,
     narrative_text, issued_at, effective_at, payload, synced_at
 )
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+VALUES %s
 ON CONFLICT (id) DO UPDATE
 SET location = EXCLUDED.location,
     latitude = EXCLUDED.latitude,
@@ -48,6 +52,25 @@ SET location = EXCLUDED.location,
     effective_at = EXCLUDED.effective_at,
     payload = EXCLUDED.payload,
     synced_at = now()
+"""
+
+
+WEATHER_EMBEDDING_SEARCH = """
+SELECT
+    d.id AS document_id,
+    d.source_type,
+    d.location,
+    d.headline,
+    d.narrative_text,
+    e.chunk_text,
+    1 - (e.embedding <=> %s::vector) AS similarity
+FROM weather_embeddings AS e
+JOIN weather_documents AS d
+    ON e.document_id = d.id
+WHERE e.model_name = %s
+  AND (%s IS NULL OR d.source_type = %s)
+ORDER BY e.embedding <=> %s::vector
+LIMIT %s
 """
 
 
@@ -131,42 +154,100 @@ def upsert_weather_documents(documents: Sequence[WeatherDocument]) -> int:
     if not documents:
         return 0
 
-    count = 0
+    documents_by_id = {document.id: document for document in documents}
+    values = [
+        (
+            document.id,
+            document.location,
+            document.latitude,
+            document.longitude,
+            document.source_type,
+            document.headline,
+            document.narrative_text,
+            document.issued_at,
+            document.effective_at,
+            Json(document.payload),
+        )
+        for document in documents_by_id.values()
+    ]
+    logger.info(
+        "Weather document batch upsert started received=%d unique=%d",
+        len(documents),
+        len(values),
+    )
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            for document in documents:
-                cursor.execute(
-                    WEATHER_DOCUMENT_UPSERT,
-                    (
-                        document.id,
-                        document.location,
-                        document.latitude,
-                        document.longitude,
-                        document.source_type,
-                        document.headline,
-                        document.narrative_text,
-                        document.issued_at,
-                        document.effective_at,
-                        Json(document.payload),
-                    ),
-                )
-                count += 1
+            execute_values(
+                cursor,
+                WEATHER_DOCUMENT_UPSERT,
+                values,
+                template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
+                page_size=500,
+            )
         connection.commit()
-    return count
+    logger.info("Weather document batch upsert completed documents=%d", len(values))
+    return len(values)
 
 
-def list_recent_weather_documents(limit: int) -> list[dict[str, Any]]:
-    """Return recent rows without loading their potentially large payloads."""
+def get_weather_summary() -> dict[str, Any]:
+    """Return compact Lakebase document and location statistics."""
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, location, latitude, longitude, source_type, headline,
-                       narrative_text, issued_at, effective_at, synced_at
+                SELECT COUNT(*) AS total_documents,
+                       COUNT(DISTINCT location) AS total_locations,
+                       COUNT(DISTINCT source_type) AS source_type_count,
+                       (SELECT COUNT(*) FROM weather_embeddings) AS total_embeddings,
+                       MAX(synced_at) AS last_synced_at
                 FROM weather_documents
-                ORDER BY synced_at DESC, id ASC
-                LIMIT %s
-                """,
-                (limit,),
+                """
             )
-            return list(cursor.fetchall())
+            summary_rows = list(cursor.fetchall())
+
+            cursor.execute(
+                """
+                SELECT source_type, COUNT(*) AS document_count
+                FROM weather_documents
+                GROUP BY source_type
+                ORDER BY source_type
+                """
+            )
+            source_rows = list(cursor.fetchall())
+
+    summary = dict(summary_rows[0]) if summary_rows else {}
+    summary["total_documents"] = int(summary.get("total_documents") or 0)
+    summary["total_locations"] = int(summary.get("total_locations") or 0)
+    summary["source_type_count"] = int(summary.get("source_type_count") or 0)
+    summary["total_embeddings"] = int(summary.get("total_embeddings") or 0)
+    summary["source_counts"] = {
+        row["source_type"]: int(row["document_count"]) for row in source_rows
+    }
+    return summary
+
+
+def search_weather_embeddings(
+    query_vector: str,
+    model_name: str,
+    top_k: int,
+    source_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return chunks ranked by cosine similarity with their source documents."""
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                WEATHER_EMBEDDING_SEARCH,
+                (
+                    query_vector,
+                    model_name,
+                    source_type,
+                    source_type,
+                    query_vector,
+                    top_k,
+                ),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+
+    for row in rows:
+        row["similarity"] = float(row["similarity"])
+    return rows

@@ -8,7 +8,7 @@ from starlette.requests import Request
 
 from app import database
 from app.main import app
-from app.models import StateWeatherBatch, US_STATES
+from app.models import StateWeatherBatch, US_STATES, WeatherSourceType
 from app.routers import weather as weather_router
 from app.schemas import StateWeatherSyncRequest, WeatherSyncRequest
 from app.services.weather_client import InvalidLocationError, WeatherAPIError
@@ -164,12 +164,19 @@ def test_state_schema_rejects_invalid_requests(payload):
         StateWeatherSyncRequest.model_validate(payload)
 
 
-def test_weather_page_loads_feedback_and_recent_rows(monkeypatch):
+def test_weather_page_loads_feedback_and_lakebase_summary(monkeypatch):
     monkeypatch.setattr(database, "ensure_weather_table", lambda: None)
     monkeypatch.setattr(
         database,
-        "list_recent_weather_documents",
-        lambda limit: [{"id": "forecast:one", "location": "Chicago, IL"}],
+        "get_weather_summary",
+        lambda: {
+            "total_documents": 42,
+            "total_embeddings": 84,
+            "total_locations": 7,
+            "source_type_count": 3,
+            "last_synced_at": "2026-08-08T10:00:00+00:00",
+            "source_counts": {"forecast": 20, "alert": 2},
+        },
     )
     fake_templates = FakeTemplates()
     request = SimpleNamespace(
@@ -180,12 +187,11 @@ def test_weather_page_loads_feedback_and_recent_rows(monkeypatch):
 
     assert response["name"] == "weather/index.html"
     assert response["context"]["synced"] == 1
-    assert response["context"]["documents"] == [
-        {"id": "forecast:one", "location": "Chicago, IL"}
-    ]
+    assert response["context"]["summary"]["total_documents"] == 42
+    assert response["context"]["summary"]["total_locations"] == 7
 
 
-def test_real_weather_template_contains_form_feedback_and_recent_row():
+def test_real_weather_template_contains_clean_sync_controls_and_summary():
     template = app.state.templates.get_template("weather/index.html")
     request = Request(
         {
@@ -209,28 +215,37 @@ def test_real_weather_template_contains_form_feedback_and_recent_row():
         error=None,
         default_limit=50,
         states=US_STATES,
-        documents=[
-            {
-                "id": "forecast:one",
-                "location": "Chicago, IL",
-                "latitude": 41.8781,
-                "longitude": -87.6298,
-                "source_type": "forecast",
-                "headline": "Tonight",
-                "narrative_text": "Clear.",
-                "issued_at": "2026-08-07T12:00:00+00:00",
-                "effective_at": "2026-08-07T19:00:00-05:00",
-                "synced_at": "2026-08-07T12:05:00+00:00",
-            }
-        ],
+        summary={
+            "total_documents": 1234,
+            "total_embeddings": 2345,
+            "total_locations": 18,
+            "source_type_count": 5,
+            "last_synced_at": "2026-08-08T10:00:00+00:00",
+            "source_counts": {
+                "forecast": 500,
+                "hourly_forecast": 400,
+                "zone_forecast": 200,
+                "alert": 34,
+                "observation": 100,
+            },
+        },
+        search_source_types=list(WeatherSourceType),
     )
 
     assert "Sync selected states" in html
     assert "Sync precise locations" in html
-    assert "Zone forecasts" in html
+    assert "Build a state-wide corpus" in html
+    assert "Target precise locations" in html
+    assert "Select all" in html
+    assert 'id="selected-state-count">0 selected' in html
+    assert 'name="states" value="IL"' in html
+    assert 'id="sync-selected-states"' in html
     assert "Successfully synced 1 weather document." in html
-    assert "Chicago, IL" in html
-    assert "Clear." in html
+    assert "Weather corpus at a glance" in html
+    assert "1,234" in html
+    assert "2,345" in html
+    assert "18" in html
+    assert "Recent weather documents" not in html
 
 
 def test_form_sync_uses_shared_service_and_redirects(monkeypatch):

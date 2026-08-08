@@ -297,14 +297,32 @@ def test_database_upsert_updates_every_field_and_commits_once(
     monkeypatch.setattr(
         database, "get_connection", connection_context(connection)
     )
-    documents = [document_factory("forecast:one"), document_factory("forecast:two")]
+    documents = [
+        document_factory("forecast:one"),
+        document_factory("forecast:two"),
+        document_factory("forecast:one", location="Austin, TX"),
+    ]
+    calls = []
+
+    def fake_execute_values(cursor, sql, values, *, template, page_size):
+        calls.append(
+            {
+                "cursor": cursor,
+                "sql": sql,
+                "values": values,
+                "template": template,
+                "page_size": page_size,
+            }
+        )
+
+    monkeypatch.setattr(database, "execute_values", fake_execute_values)
 
     count = database.upsert_weather_documents(documents)
 
     assert count == 2
     assert connection.commits == 1
-    assert len(connection.fake_cursor.executions) == 2
-    sql, params = connection.fake_cursor.executions[0]
+    assert len(calls) == 1
+    sql = calls[0]["sql"]
     assert "ON CONFLICT (id) DO UPDATE" in sql
     for column in (
         "location",
@@ -319,20 +337,62 @@ def test_database_upsert_updates_every_field_and_commits_once(
         "synced_at",
     ):
         assert column in sql
-    assert isinstance(params[-1], Json)
+    assert calls[0]["page_size"] == 500
+    assert calls[0]["template"].endswith("%s, now())")
+    assert [values[0] for values in calls[0]["values"]] == [
+        "forecast:one",
+        "forecast:two",
+    ]
+    assert calls[0]["values"][0][1] == "Austin, TX"
+    assert all(isinstance(values[-1], Json) for values in calls[0]["values"])
 
 
-def test_recent_documents_query_omits_payload(monkeypatch):
-    rows = [{"id": "forecast:one", "location": "Chicago, IL"}]
-    connection = FakeConnection(rows)
+def test_weather_summary_queries_counts_without_loading_documents(monkeypatch):
+    class SummaryCursor(FakeCursor):
+        def __init__(self):
+            super().__init__()
+            self.result_sets = [
+                [
+                    {
+                        "total_documents": 12,
+                        "total_embeddings": 18,
+                        "total_locations": 3,
+                        "source_type_count": 2,
+                        "last_synced_at": "2026-08-08T10:00:00+00:00",
+                    }
+                ],
+                [
+                    {"source_type": "alert", "document_count": 2},
+                    {"source_type": "forecast", "document_count": 10},
+                ],
+            ]
+
+        def fetchall(self):
+            return self.result_sets[len(self.executions) - 1]
+
+    connection = FakeConnection()
+    connection.fake_cursor = SummaryCursor()
     monkeypatch.setattr(
         database, "get_connection", connection_context(connection)
     )
 
-    result = database.list_recent_weather_documents(25)
+    result = database.get_weather_summary()
 
-    sql, params = connection.fake_cursor.executions[0]
-    assert result == rows
-    assert "payload" not in sql
-    assert "ORDER BY synced_at DESC" in sql
-    assert params == (25,)
+    aggregate_sql, aggregate_params = connection.fake_cursor.executions[0]
+    breakdown_sql, breakdown_params = connection.fake_cursor.executions[1]
+    assert result == {
+        "total_documents": 12,
+        "total_embeddings": 18,
+        "total_locations": 3,
+        "source_type_count": 2,
+        "last_synced_at": "2026-08-08T10:00:00+00:00",
+        "source_counts": {"alert": 2, "forecast": 10},
+    }
+    assert "COUNT(*) AS total_documents" in aggregate_sql
+    assert "COUNT(*) FROM weather_embeddings" in aggregate_sql
+    assert "COUNT(DISTINCT location) AS total_locations" in aggregate_sql
+    assert "MAX(synced_at) AS last_synced_at" in aggregate_sql
+    assert "GROUP BY source_type" in breakdown_sql
+    assert "narrative_text" not in aggregate_sql + breakdown_sql
+    assert aggregate_params is None
+    assert breakdown_params is None

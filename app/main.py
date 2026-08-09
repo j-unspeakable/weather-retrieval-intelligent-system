@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.routers import health, weather
+from app.routers import health, retrieval, weather
 
 
 logging.basicConfig(
@@ -33,4 +33,5 @@ def favicon() -> FileResponse:
 
 
 app.include_router(health.router)
+app.include_router(retrieval.router)
 app.include_router(weather.router)

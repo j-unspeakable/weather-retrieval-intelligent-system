@@ -1,0 +1,17 @@
+command:
+  - uv
+  - run
+  - --frozen
+  - weather-mcp
+
+env:
+  - name: WEATHER_API_APP_NAME
+    valueFrom: weather-app
+  - name: MCP_OPEN_METEO_GEOCODING_URL
+    value: "https://geocoding-api.open-meteo.com/v1"
+  - name: MCP_OPEN_METEO_FORECAST_URL
+    value: "https://api.open-meteo.com/v1"
+  - name: MCP_WEATHER_REQUEST_TIMEOUT
+    value: "20"
+  - name: MCP_WEATHER_USER_AGENT
+    value: "weather-intelligence-mcp/0.1 (Databricks App)"

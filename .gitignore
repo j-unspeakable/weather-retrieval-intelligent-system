@@ -13,3 +13,4 @@ htmlcov/
 .vscode/
 *.swp
 .DS_Store
+mcp_server/*.egg-info

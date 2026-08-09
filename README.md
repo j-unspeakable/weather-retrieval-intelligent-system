@@ -7,12 +7,14 @@ locations and state-wide NWS forecast-zone coverage. A separate Databricks
 notebook chunks the stored narratives and creates MiniLM vector embeddings.
 The FastAPI app embeds search queries with the same model, performs pgvector
 cosine-similarity retrieval, and calls OpenRouter's chat-completions API for a
-short answer grounded in the ranked chunks.
+short answer grounded in the ranked chunks. A separate Day 3 FastMCP App adds
+global live Open-Meteo tools and exposes the existing stored retrieval service
+to Agent Bricks without duplicating embedding or database logic.
 
-This repository implements **Part 1: raw weather ingestion** and **Part 2:
-the offline vectorization pipeline**, and **Part 3: semantic retrieval**. It
-does not implement conversational memory, agents, Spark, scheduled jobs, or
-the stock/news functionality from the Day 2 reference application.
+This repository implements **Part 1: raw weather ingestion**, **Part 2: the
+offline vectorization pipeline**, **Part 3: semantic retrieval**, and the Day 3
+MCP + Agent Bricks integration. It does not implement conversational memory,
+an optional MCP dashboard, Spark, or the stock/news reference functionality.
 
 ## Application structure
 
@@ -28,9 +30,14 @@ the stock/news functionality from the Day 2 reference application.
 - `app/database.py` generates Lakebase OAuth credentials and contains direct
   psycopg2 DDL, upsert, and read logic.
 - `app/routers/weather.py` exposes both JSON and HTML workflows.
+- `app/routers/retrieval.py` exposes raw stored retrieval for authenticated
+  Databricks app-to-app calls without invoking OpenRouter.
 - `notebooks/ingest_weather_embeddings.ipynb` creates chunk embeddings from
   the existing `weather_documents` rows using a notebook-local Lakebase OAuth
   connection without changing the FastAPI runtime.
+- `mcp_server/` is an independently deployable FastMCP Databricks App with
+  global Open-Meteo tools and a delegated Day 2 corpus-search tool.
+- `agent/` contains the Agent Bricks system prompt and configuration steps.
 
 ## Configuration
 
@@ -136,6 +143,9 @@ and non-secret defaults used by Databricks Apps are in `app.yaml`.
 - `POST /weather/search` — semantic search JSON endpoint.
 - `GET /weather/search` — query-parameter variant of semantic search.
 - `POST /weather/search-form` — server-rendered semantic search form.
+- `POST /api/weather/search` — raw semantic matches for authenticated app
+  consumers; it uses the existing request/response schema and returns
+  `summary: null`.
 
 Example JSON request:
 
@@ -383,8 +393,70 @@ The Part 2 uniqueness constraint on `(document_id, chunk_index, model_name)`
 keeps stored chunks deduplicated. Part 3 is read-only and does not regenerate
 or update embeddings. The RAG prompt treats retrieved text as untrusted data,
 requires the answer to use only supplied context, requests numbered citations,
-and limits output to 300 tokens. Conversational memory, LLM-generated source
-data, and scheduled ingestion remain out of scope.
+and limits output to 300 tokens. Conversational memory and LLM-generated
+source data remain out of scope.
+
+## Day 3: MCP and Agent Bricks
+
+`mcp_server/` is a standalone FastMCP application with four Streamable HTTP
+tools:
+
+- `get_current_weather(location)` — global live current conditions.
+- `get_forecast(location, days=7)` — a global 1–16 day forecast.
+- `get_weather_recommendation(location, date)` — deterministic precautions for
+  an ISO forecast date, including the evidence and thresholds used.
+- `search_weather_documents(query, top_k=5, source_type=None)` — semantic
+  retrieval from the existing Day 2 corpus.
+
+The three Open-Meteo tools accept global free-form places or valid `lat,lon`
+coordinates. Free-form geocoding selects Open-Meteo's highest-ranked result,
+and responses return the resolved name, region, country, coordinates, and
+timezone. Coordinate inputs are not reverse-geocoded; their supplied
+coordinate label is retained. Live values use Fahrenheit, mph, and inches.
+No Open-Meteo API key is required.
+
+Stored search is intentionally different: it can only find documents already
+ingested into `weather_documents` and embedded into `weather_embeddings`.
+Empty stored results do not imply that live weather is unavailable. The MCP
+App delegates retrieval to `POST /api/weather/search`, which calls the existing
+`search_weather()` service and returns `WeatherSearchResponse` with
+`summary: null`. The MCP App therefore needs neither Lakebase access nor a
+local MiniLM/PyTorch installation.
+
+### Run locally
+
+Run Day 2 on port 8000, then run the MCP package on port 8001:
+
+```bash
+uv run fastapi dev
+
+cd mcp_server
+cp .env.example .env
+set -a
+source .env
+set +a
+uv sync --all-groups
+uv run weather-mcp
+```
+
+The local Streamable HTTP endpoint is `http://127.0.0.1:8001/mcp`.
+
+### Deploy to Databricks Apps
+
+1. Deploy the updated Day 2 App so `/api/weather/search` is available.
+2. Create a separate App named `mcp-weather-intelligence`.
+3. Add the Day 2 App as an App resource with key `weather-app` and grant the
+   MCP App service principal **CAN USE**.
+4. Deploy the contents of `mcp_server/`. Its `app.yaml` resolves
+   `WEATHER_API_APP_NAME` from `weather-app` and starts `weather-mcp`.
+5. Grant intended Agent Bricks users **CAN USE** on the MCP App.
+6. Add the deployed App as a custom MCP tool in Agent Bricks and apply
+   `agent/system_prompt.md`.
+
+For deployed app-to-app retrieval, the broker resolves the Day 2 App using
+`WorkspaceClient().apps.get(...)` and obtains request headers through
+`WorkspaceClient().config.authenticate()`. It does not manage OAuth tokens.
+See `agent/README.md` for the remaining workspace configuration steps.
 
 ## Tests
 
@@ -392,5 +464,8 @@ Tests mock external APIs and Lakebase, so no credentials or network access are
 required:
 
 ```bash
+uv run pytest
+
+cd mcp_server
 uv run pytest
 ```

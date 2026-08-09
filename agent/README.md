@@ -34,3 +34,20 @@ not configure or store an OAuth access token manually.
 Live tools are global and use Imperial units. Stored search remains limited to
 whatever the Day 2 ingestion and embedding pipeline has placed in
 `weather_documents` and `weather_embeddings`.
+
+## Demonstration evidence
+
+Capture the visible tool call and final answer for these scenarios as text or
+screenshots:
+
+1. Invalid location: `What is the weather in a place that cannot be resolved?`
+   Confirm the tool returns a structured `LocationResolutionError` and the
+   agent asks for a clearer city/region/country instead of guessing.
+2. Combined grounding: `Is flooding a concern in Chicago today? Use live
+   weather and our stored weather context.` Confirm the answer contains
+   `Live — Open-Meteo` and `Stored context — Day 2 Lakebase` headings.
+3. Stored-only retrieval: request three stored flooding results and confirm the
+   answer does not claim that empty stored results mean live data is missing.
+
+Save actual Playground output rather than constructing a sample transcript;
+the evidence should show the deployed tool behavior.

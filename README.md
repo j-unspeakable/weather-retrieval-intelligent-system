@@ -415,6 +415,24 @@ timezone. Coordinate inputs are not reverse-geocoded; their supplied
 coordinate label is retained. Live values use Fahrenheit, mph, and inches.
 No Open-Meteo API key is required.
 
+Recommendation rules are deterministic and use these exact cutoffs:
+
+- Carry an umbrella when maximum precipitation probability is at least 40% or
+  forecast precipitation is at least 0.05 inches.
+- Bring a jacket when the temperature low or apparent-temperature low is at
+  most 50°F.
+- Take heat precautions when the high is at least 90°F or the apparent high is
+  at least 95°F.
+- Take wind precautions when maximum sustained wind is at least 25 mph or
+  maximum gusts are at least 35 mph.
+- Take snow/ice precautions for at least 0.01 inches of snow or WMO freezing
+  precipitation/snow codes 56, 57, 66, 67, 71, 73, 75, 77, 85, or 86.
+- Take thunderstorm precautions for WMO codes 95, 96, or 99.
+
+Every triggered result contains both the measurements and the corresponding
+thresholds. These rules are practical guidance rather than official emergency
+advice.
+
 Stored search is intentionally different: it can only find documents already
 ingested into `weather_documents` and embedded into `weather_embeddings`.
 Empty stored results do not imply that live weather is unavailable. The MCP
@@ -440,6 +458,13 @@ uv run weather-mcp
 ```
 
 The local Streamable HTTP endpoint is `http://127.0.0.1:8001/mcp`.
+
+The MCP App uses the same dependency approach as the Day 2 App:
+`mcp_server/pyproject.toml` declares the complete dependency graph and
+`mcp_server/uv.lock` pins reproducible versions and hashes. Deploy both files
+with the MCP source. No separate `requirements.txt` dependency specification
+is used; the existing `uv run --frozen weather-mcp` command consumes the
+project and lock directly.
 
 ### Deploy to Databricks Apps
 

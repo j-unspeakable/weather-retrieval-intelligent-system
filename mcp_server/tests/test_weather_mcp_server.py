@@ -4,6 +4,7 @@ from fastmcp import Client
 import pytest
 
 import weather_mcp_server as server
+from weather_broker import LocationResolutionError, WeatherRetrievalError
 
 
 class FakeBroker:
@@ -51,6 +52,50 @@ def test_tool_functions_are_thin_broker_delegates(fake_broker):
         ("recommendation", "Paris", "2026-08-10"),
         ("search", "flood", 3, "alert"),
     ]
+
+
+def test_expected_live_error_is_returned_as_structured_payload(monkeypatch):
+    class FailingBroker:
+        def get_current_weather(self, location):
+            raise LocationResolutionError(f"Could not resolve location: {location}")
+
+    monkeypatch.setattr(server, "get_broker", lambda: FailingBroker())
+
+    result = server.get_current_weather("Atlantis")
+
+    assert result == {
+        "error": {
+            "type": "LocationResolutionError",
+            "message": "Could not resolve location: Atlantis",
+        }
+    }
+
+
+def test_expected_search_error_is_returned_as_structured_payload(monkeypatch):
+    class FailingBroker:
+        def search_weather_documents(self, query, top_k, source_type):
+            raise WeatherRetrievalError("Stored weather search is unavailable")
+
+    monkeypatch.setattr(server, "get_broker", lambda: FailingBroker())
+
+    result = server.search_weather_documents("flooding")
+
+    assert result["error"]["type"] == "WeatherRetrievalError"
+    assert result["error"]["message"] == "Stored weather search is unavailable"
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        server.get_current_weather,
+        server.get_forecast,
+        server.get_weather_recommendation,
+        server.search_weather_documents,
+    ],
+)
+def test_tool_docstrings_document_arguments_and_returns(tool):
+    assert "Args:" in tool.__doc__
+    assert "Returns:" in tool.__doc__
 
 
 @pytest.mark.asyncio

@@ -459,12 +459,12 @@ uv run weather-mcp
 
 The local Streamable HTTP endpoint is `http://127.0.0.1:8001/mcp`.
 
-The MCP App uses the same dependency approach as the Day 2 App:
-`mcp_server/pyproject.toml` declares the complete dependency graph and
-`mcp_server/uv.lock` pins reproducible versions and hashes. Deploy both files
-with the MCP source. No separate `requirements.txt` dependency specification
-is used; the existing `uv run --frozen weather-mcp` command consumes the
-project and lock directly.
+The MCP App uses `mcp_server/requirements.txt` only to install the `uv`
+executable during the Databricks build bootstrap. The complete application
+dependency graph remains declared in `mcp_server/pyproject.toml`, while
+`mcp_server/uv.lock` pins reproducible versions and hashes. At startup,
+`uv run --frozen weather-mcp` consumes that project and lock. Deploy all three
+files together; `requirements.txt` is not a duplicate runtime dependency list.
 
 ### Deploy to Databricks Apps
 

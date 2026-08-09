@@ -35,14 +35,14 @@ def fake_broker(monkeypatch):
 
 
 def test_tool_functions_are_thin_broker_delegates(fake_broker):
-    assert server.get_current_weather.fn("Lagos")["kind"] == "current"
-    assert server.get_forecast.fn("Tokyo", 4)["kind"] == "forecast"
+    assert server.get_current_weather("Lagos")["kind"] == "current"
+    assert server.get_forecast("Tokyo", 4)["kind"] == "forecast"
     assert (
-        server.get_weather_recommendation.fn("Paris", "2026-08-10")["kind"]
+        server.get_weather_recommendation("Paris", "2026-08-10")["kind"]
         == "recommendation"
     )
     assert (
-        server.search_weather_documents.fn("flood", 3, "alert")["kind"]
+        server.search_weather_documents("flood", 3, "alert")["kind"]
         == "search"
     )
     assert fake_broker.calls == [

@@ -5,7 +5,7 @@ description = "Global Open-Meteo and Day 2 Lakebase retrieval tools for Databric
 requires-python = ">=3.11"
 dependencies = [
     "databricks-sdk>=0.30.0",
-    "fastmcp>=2.12.0,<3.0.0",
+    "fastmcp>=3.2.0,<4.0.0",
     "pydantic>=2.10.0",
     "requests>=2.32.3",
     "urllib3>=2.2.0",
